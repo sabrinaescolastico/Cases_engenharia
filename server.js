@@ -1,11 +1,20 @@
+const helmet = require('helmet');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit'); 
+
 const express = require('express');
-const db = require('./database');
+
+const { depositar, sacar } = require('./services/clientesService');
+//const { dbRun } = require('./database'); subistituido pela linha de baixo, importar os dbs do banco
+const { dbRun, dbGet, dbAll } = require('./database');
 
 const app = express();
-const PORT = process.env.PORT || 8080;
-
-
 app.use(express.json());
+app.use(helmet());
+app.use(cors());
+
+
+const PORT = process.env.PORT || 8080;
 
 /*Uso de funções auxiliares - Function - 
  Function usada no lugar de => para criar contexto próprio e evitar que de erro na hora de buscar a informação
@@ -13,7 +22,7 @@ Function tem próprio this. Arrow function herda this do escopo externo.
  "Arrow function é mais moderna e leve, mas function é mais poderosa em controle de contexto." 
 */
 
-  function dbRun(query, params) {
+ /* function dbRun(query, params) {
     return new Promise(function(resolve, reject) {
         db.run(query, params || [], function(err) {
             if (err) reject (err);
@@ -21,10 +30,10 @@ Function tem próprio this. Arrow function herda this do escopo externo.
         
         });
     });
-}
+}*/
 /*Solicitar as informações do cliente com GET e informar mensagem de erro caso não preenchido
  Executa consulta que retorna APENAS UMA LINHA *(Ex. SELECT WHERE id =?)
-*/
+
  function dbGet(query, params) {
     return new Promise(function(resolve, reject) {
         db.get(query, params ||[], function (err, row){
@@ -43,6 +52,7 @@ function dbAll(query, params) {
         });
     })
 }
+*/
 // Validação de ID padrão 
 function validarId(id) {
     const idNumber = Number(id);
@@ -62,6 +72,7 @@ app.get('/clientes', async function(req, res) {
         const rows = await dbAll('SELECT * FROM clientes');
         return res.json(rows);
     } catch (err){
+        console.error(err); //Garante segurança, e registra o erro no servidor, não para o usuário. Permite Debug
         return res.status(500).json({error: "Erro interno do servidor"});
     }
 });
@@ -87,6 +98,7 @@ app.get ('/clientes/:id', async function(req, res) {
         return res.json(row);
 
     } catch (err) {
+        console.error(err);
         return res.status(500).json({ error: "Erro interno do servidor"});
     }
 
@@ -121,6 +133,7 @@ app.post ('/clientes', async function(req,res) {
         if (err.message.includes("UNIQUE")) {
         return res.status(400).json ({ error: "Email já existe."}); 
         }
+        console.error(err);
         return res.status(500).json ({error: "Erro interno do servidor"});
     }
 });
@@ -176,6 +189,7 @@ app.put('/clientes/:id', async function(req, res) {
             return res.status(200).json({ message: "Cliente atualizado com sucesso" });
 
         } catch (err) {
+            console.error(err);
              return res.status(500).json({error: "Erro interno do servidor"});
     }
 });
@@ -201,6 +215,7 @@ app.delete ('/clientes/:id', async function(req, res) {
         return res.status(200).json({message: "Cliente removido com sucesso."});
 
     } catch(err){
+        console.error(err);
         return res.status(500).json({error: "Erro interno do servidor"});
     }
     
@@ -216,38 +231,49 @@ Sucesso: o status 200(ok) e Erro: "O valor deve ser positivo"
 app.post('/clientes/:id/depositar', async function(req, res){
     try{
         const idNumber = validarId(req.params.id);
-        const valorNumber = Number(req.body?.valor);
-
+        
         if(!idNumber){
             return res.status(400).json({error: "ID inválido"});
         }
-        if(!Number.isFinite(valorNumber) || valorNumber <=0){
+        const valor = Number(req.body?.valor);
+        const valorNumber = Math.round(valor*100);
+
+        if(!Number.isFinite(valorNumber) || valorNumber <= 0){
             return res.status(400).json({error: "Valor inválido"});
         }
-
+        /*update - Atualizado no endpoint - Trecho alterado para usar o Service
         const result = await dbRun('UPDATE clientes SET saldo = saldo + ? WHERE id = ?', [valorNumber,idNumber]);
-       
+
+        //Validar se ocorreu alguma mudança na operação
         if (result.changes === 0) {
             return res.status(404).json({error: "Cliente não encontrado"});
         }
-            return res.status(200).json({ message: "Depósito realizado com sucesso" });
+        */
 
-    
+    //Refatoração - Chama o Service Depositar (liga o Throw, em clientesService com o Catch)
+        await depositar( dbRun , idNumber, valorNumber)
+        return res.status(200).json({ message: "Depósito realizado com sucesso" });
+
     } catch (err) {
+        if (err.message === "CLIENTE_NAO_ENCONTRADO") {
+            return res.status(404).json({ error: "Cliente não encontrado" });
+        }
+        console.error(err);
         return res.status(500).json({error: "Erro interno do servidor"});
     }
     
 });
 /* POST - Sacar - Realizar saque
-Recebe o id do cliente pela URL e  o valor do saque pelo corpo da requisição 
-Validar se o valor é positivo, se o cliente existe e se há saldo suficiente.
+Recebe e valida o id do cliente pela URL e  o valor do saque pelo corpo da requisição 
+Validar se o valor é positivo, se o cliente existe e se há saldo suficiente.  Valida se o valor é numero, 
+numero com formula matemática para aredondamento e multiplicado, valor esta em centavos.
 Subtrai o valor do saldo no banco
 Sucesso: o status 200(ok) e Erro: "O valor deve ser positivo", "Cliente não encontrado", "Saldo insuficiente"
 */
 app.post('/clientes/:id/sacar', async function(req, res) {
     try{
         const idNumber = validarId(req.params.id);
-        const valorNumber = Number(req.body?.valor);
+        const valorNumber = Math.round(Number(req.body?.valor)*100);
 
         if (!idNumber) {
             return res.status(400).json({ error: "ID inválido" });
@@ -256,23 +282,31 @@ app.post('/clientes/:id/sacar', async function(req, res) {
         if (!Number.isFinite(valorNumber) || valorNumber <= 0) {
             return res.status(400).json({ error: "Valor inválido" });
         }
-
-        //busca o saldo do cliente no banco
-        const cliente = await dbGet('SELECT saldo FROM clientes WHERE id = ?', [idNumber]);
-
-        //Verifica se o cliente existe
-        if(!cliente){ 
+        /*verifica se o cliente existe
+        const clienteExiste = await dbGet('SELECT id FROM clientes WHERE id = ?', [idNumber]); 
+        
+        if(!clienteExiste){ 
             return res.status(404).json({error: "Cliente não encontrado"});
         }
+        //Atualização - Correção do Race condition
+        const result = await dbRun( 'UPDATE clientes SET saldo = saldo - ? WHERE id = ? AND saldo >= ?',
+             [valorNumber, idNumber, valorNumber]);
+
         //Verificar se tem saldo suficiente
-        if (cliente.saldo < valorNumber) {
+        if (result.changes === 0) {//(cliente.saldo < valorNumber) {
             return res.status(400).json({error: "Saldo insuficiente"});
         }
-        //Atualizar o saldo subtraindo o valor
-        await dbRun('UPDATE clientes SET saldo = saldo - ? WHERE id = ?', [valorNumber, idNumber]);
-        return res.status(200).json({ message: "Saque realizado com sucesso" });
+        */
+        //Refatoração - Chama o Service Sacar
+        await sacar(dbRun, idNumber, valorNumber);
+
+            return res.status(200).json({ message: "Saque realizado com sucesso" });
 
     } catch (err) {
+        if (err.message === "SALDO_INSUFICIENTE_OU_CLIENTE_NAO_ENCONTRADO") {
+            return res.status(400).json({error: "Saldo insuficiente ou cliente não encontrado"});
+}
+        console.error(err);
         return res.status(500).json({error: "Erro interno do servidor"});
     }
 });
@@ -285,5 +319,3 @@ Exibe no terminal a porta em uso
 app.listen (PORT, function() {
     console.log("Server Listening on PORT " + PORT);
 });
-
-
